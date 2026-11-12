@@ -18,7 +18,7 @@ def main() -> None:
     )
     os.environ["LITELLM_MASTER_KEY"] = "sk-" + os.environ.pop("LITELLM_MASTER_KEY_SUFFIX")
     os.execv("/app/docker/prod_entrypoint.sh", [
-        "/app/docker/prod_entrypoint.sh", "--config", "/app/gateway/config.yaml",
+        "/app/docker/prod_entrypoint.sh", "--config", "/app/gateway-config.yaml",
         "--host", "127.0.0.1", "--port", "4000",
     ])
 

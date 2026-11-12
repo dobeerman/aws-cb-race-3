@@ -30,5 +30,5 @@ if [[ -z "$runtime_id" || "$runtime_id" == None ]]; then
 fi
 
 exec aws ssm start-session --target "ecs:${cluster}_${task##*/}_${runtime_id}" \
-  --document-name AWS-StartPortForwardingSessionToRemoteHost \
-  --parameters '{"host":["127.0.0.1"],"portNumber":["4000"],"localPortNumber":["4000"]}'
+  --document-name AWS-StartPortForwardingSession \
+  --parameters '{"portNumber":["4000"],"localPortNumber":["4000"]}'
