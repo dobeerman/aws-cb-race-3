@@ -50,6 +50,37 @@ The test creates temporary model-scoped keys for App A (USD 0.01) and App B (USD
 
 The live test incurs Bedrock token charges. It makes at most 30 load requests with 48,000 bytes of synthetic input each, followed by at most six short App A probes and one short App B request. All requests cap output at eight tokens. It stops sending large prompts once usage estimates reach USD 0.01. Under the configured Nova Micro on-demand rates, the full client request allowance is roughly USD 0.05 assuming one input token per byte, before gateway-side retries or any price changes. [Amazon Bedrock pricing](https://aws.amazon.com/bedrock/pricing/)
 
+## Verify LiteLLM retries and fallback locally
+
+Run `make test-reliability` with Python 3 and a running Docker engine that supports
+`linux/amd64`. Docker downloads the digest-pinned LiteLLM image from
+`gateway/Dockerfile` if it is missing locally. The test starts the proxy and a
+programmable OpenAI-compatible mock on loopback inside a disposable container
+with external networking disabled. It requires no tunnel, AWS credentials, or
+gateway keys and makes no Bedrock calls.
+
+| Case | Primary responses | Backup responses | Client response |
+| --- | --- | --- | --- |
+| Baseline | 200 | — | 200 with primary completion |
+| Retry | 429, 429, 200 | — | 200 with primary completion |
+| Fallback | 503, 503, 503 | 200 | 200 with backup completion |
+| Exhaustion | 503, 503, 503 | 503, 503, 503 | 503 with an injected error |
+
+The LiteLLM router allows two retries per model group and one fallback hop.
+The OpenAI SDK has retries disabled so each recorded upstream request corresponds
+to a router attempt. The mock records the model and HTTP status of every request
+in order. The suite checks that sequence alongside the client's status and
+completion or error marker. Each upstream request has a five-second timeout,
+with a longer client timeout for retries and fallback.
+
+Each run prints its report directory under `.local/reliability/`. It contains
+`results.json` with assertions and expected and observed attempts,
+`summary.md` with pass/fail results, and `evidence.json` with the recorded
+attempts and allowlisted client response fields. Reports omit keys, headers,
+request bodies, and raw proxy logs. A failed check or harness error exits nonzero.
+Docker removes the container on exit and the runner requests cleanup on
+interruption or timeout.
+
 ## Cost and teardown
 
 At 730 hours per month in Northern Virginia, one Linux/x86 task (0.5 vCPU, 2 GiB) costs about **$21**, its public IPv4 address **$3.65**, and Aurora at its 0.5 ACU floor **$43.80**. The minimum compute and IPv4 subtotal is about **$69/month** before database storage and I/O, CloudWatch, Secrets Manager, ECR, and Bedrock token charges. At 2 ACUs throughout the month, Aurora compute alone would cost about **$175/month**. LiteLLM key budgets govern model usage through the gateway. AWS bills infrastructure independently. [Fargate](https://aws.amazon.com/fargate/pricing/) · [VPC](https://aws.amazon.com/vpc/pricing/) · [Aurora](https://aws.amazon.com/rds/aurora/pricing/) · [Bedrock](https://aws.amazon.com/bedrock/pricing/)
