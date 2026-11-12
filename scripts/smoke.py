@@ -2,7 +2,8 @@
 
 import json
 import subprocess
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 from uuid import uuid4
 
@@ -14,18 +15,51 @@ def aws(*args):
     return subprocess.check_output(["aws", *args, "--no-cli-pager", "--output", "text"], text=True).strip()
 
 
-def request(path, key=None, body=None):
+class GatewayError(RuntimeError):
+    def __init__(self, path, status, key_budget_exceeded):
+        super().__init__(f"{path} returned HTTP {status}")
+        self.key_budget_exceeded = key_budget_exceeded
+
+
+def request(path, key=None, body=None, *, query=None):
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
     data = json.dumps(body).encode() if body is not None else None
+    url = LOCAL_GATEWAY + path
+    if query:
+        url += "?" + urlencode(query)
     try:
-        with OPENER.open(Request(LOCAL_GATEWAY + path, data=data, headers=headers), timeout=45) as response:
+        with OPENER.open(Request(url, data=data, headers=headers), timeout=45) as response:
             return json.load(response)
     except HTTPError as error:
-        # An upstream error body can contain credentials or request data.
-        error.close()
-        raise RuntimeError(f"{path} returned HTTP {error.code}") from None
+        budget_denial = False
+        with error:
+            if path == "/v1/chat/completions" and error.code in (400, 401, 403, 422, 429):
+                try:
+                    detail = json.loads(error.read(8192))["error"]
+                    message = detail.get("message", "")
+                    budget_denial = (
+                        "Budget has been exceeded! Key=" in message
+                        or detail.get("type") == "budget_exceeded"
+                    )
+                except (ValueError, KeyError, TypeError, AttributeError, OSError):
+                    pass
+        raise GatewayError(path, error.code, budget_denial) from None
+    except (URLError, TimeoutError):
+        raise RuntimeError(f"{path} could not reach the gateway; check make tunnel") from None
+    except (ValueError, OSError):
+        raise RuntimeError(f"{path} returned an unreadable response") from None
+
+
+def master_key():
+    secret_arn = aws(
+        "cloudformation", "describe-stacks", "--stack-name", "SpeedRunAiGateway",
+        "--query", "Stacks[0].Outputs[?OutputKey=='MasterKeySecretArn'].OutputValue | [0]",
+    )
+    return "sk-" + json.loads(aws(
+        "secretsmanager", "get-secret-value", "--secret-id", secret_arn, "--query", "SecretString",
+    ))["key"]
 
 
 def main():
@@ -38,13 +72,7 @@ def main():
     else:
         raise RuntimeError("Expected unauthenticated model listing to be rejected")
 
-    secret_arn = aws(
-        "cloudformation", "describe-stacks", "--stack-name", "SpeedRunAiGateway",
-        "--query", "Stacks[0].Outputs[?OutputKey=='MasterKeySecretArn'].OutputValue | [0]",
-    )
-    master = "sk-" + json.loads(aws(
-        "secretsmanager", "get-secret-value", "--secret-id", secret_arn, "--query", "SecretString",
-    ))["key"]
+    master = master_key()
 
     budget = 0.01
     alias = f"smoke-{uuid4().hex}"

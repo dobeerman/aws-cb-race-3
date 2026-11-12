@@ -2,7 +2,7 @@ STACK := SpeedRunAiGateway
 export AWS_REGION := us-east-1
 export AWS_DEFAULT_REGION := us-east-1
 
-.PHONY: install check synth diff bootstrap deploy tunnel smoke destroy
+.PHONY: install check synth diff bootstrap deploy tunnel smoke test-budgets destroy
 
 install:
 	pnpm install --frozen-lockfile
@@ -32,6 +32,9 @@ tunnel:
 
 smoke:
 	python3 scripts/smoke.py
+
+test-budgets:
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_budgets.py
 
 destroy:
 	pnpm cdk destroy $(STACK)
