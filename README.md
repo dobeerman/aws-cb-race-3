@@ -1,92 +1,245 @@
 # AI Gateway on Amazon ECS
 
-November 11 infrastructure milestone for AWS Builder Center Speed Run 3. The gateway exposes an OpenAI-compatible API through LiteLLM Proxy and invokes Amazon Nova Micro in Amazon Bedrock. Aurora PostgreSQL Serverless v2 stores virtual keys, their budgets, and spend records.
+A reproducible AI gateway using **LiteLLM Proxy**, **Amazon ECS Fargate**, **Amazon Bedrock (Nova Micro)**, and **Aurora PostgreSQL Serverless v2**. The gateway exposes an OpenAI-compatible API and demonstrates model-scoped virtual keys, independent application budgets, spend accounting, and deterministic reliability tests.
+
+Built for **AWS Builder Center Speed Run 3**. This is a single-account demonstration, **not a production-ready multi-tenant gateway**.
+
+**Verified end-to-end:** a clean `make destroy → make deploy → make verify` cycle was completed successfully on November 12, 2026. The SSM tunnel must be running in a separate terminal during `make verify`.
+
+## Architecture
 
 ```text
-Operator and API client
-  -> SSM tunnel on localhost:4000
-  -> LiteLLM Proxy on ECS Fargate
-       -> Bedrock Converse using the ECS task role
-       -> Aurora PostgreSQL over TLS
+Operator / local API client
+       |
+       | AWS Systems Manager port forwarding
+       v
+localhost:4000  ->  ECS Fargate, 1 task, LiteLLM Proxy (127.0.0.1:4000)
+                         |                       |
+                         |                       +--> Amazon Bedrock Converse
+                         |                            Nova Micro via task IAM role
+                         |
+                         +--> Aurora PostgreSQL Serverless v2
+                              virtual keys, budgets, spend records
+                              
+Secrets Manager -> ECS task secrets
+CloudWatch Logs <- ECS container logs
 ```
 
-The demo uses one AWS account in `us-east-1`. Fargate gets an outbound public IPv4 address to reach AWS APIs and ECR without a NAT gateway. Its security group has no inbound rules, and LiteLLM binds to loopback. Aurora runs in isolated subnets with encrypted storage and PostgreSQL access from the task security group. ECS injects database credentials and the gateway admin credential from Secrets Manager. The task role can invoke only the configured Bedrock foundation model. CloudWatch keeps container logs for seven days.
+The stack runs in **us-east-1**. Fargate uses a public subnet and outbound public IPv4 address to reach AWS APIs without a NAT gateway. Its security group permits **no inbound traffic**, and LiteLLM listens on loopback. The database lives in isolated subnets, is not publicly accessible, uses encrypted storage, requires TLS, and permits PostgreSQL connections only from the ECS task security group.
 
-This demo uses one task and one database writer. A task update briefly interrupts service so only one LiteLLM instance runs schema initialization. The runtime uses the Aurora cluster user for schema initialization and proxy operations. Use short-lived virtual keys for API calls. Treat permission to open SSM sessions on the task as privileged access to the container and its network. Restrict it to trusted operators and the session document they need. [AWS Session Manager documentation](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-sessions-start.html)
+An SSM tunnel, not an ALB or public HTTP endpoint, provides local access to both the OpenAI-compatible API and LiteLLM Admin UI. Permissions to start an SSM session are privileged and should be restricted to trusted operators. ECS injects database credentials and the LiteLLM master-key suffix from Secrets Manager. The task role grants Bedrock invocation only for the configured Nova Micro foundation model.
 
-## Check locally
+### Design decisions and trade-offs
 
-Install Node.js 24, pnpm 12.18.0, Python 3 and Make.
+| Decision | Why | Cost or limitation |
+| --- | --- | --- |
+| ECS Fargate | Runs the regular long-lived LiteLLM Proxy and Admin UI | Always-on compute; this single-task demo briefly interrupts service during updates |
+| Aurora Serverless v2 | Keeps keys, budgets, and usage across task replacements | Nontrivial minimum cost; runtime currently uses the database's generated cluster user, including schema initialization |
+| SSM port forwarding | Avoids publishing an admin API on the internet | For operator-led tests, not a production ingress pattern |
+| Public task subnet, no NAT | Simple outbound AWS connectivity with lower infrastructure cost | Public IPv4 charge and outbound internet path |
+| One task, one writer | Limits concurrent schema-initialization complexity | No application-level high availability |
+| Short-lived virtual keys | Per-application model and spend controls | Not a replacement for AWS tenant isolation or an infrastructure spending cap |
 
-```sh
+Aurora PostgreSQL is pinned to version 16.8, with **0.5–2 ACUs**, encryption and a one-day backup retention. CloudWatch logs are retained for seven days. Database deletion protection is disabled and removal is destructive: use a disposable account or accept loss of demo data on teardown.
+
+## Prerequisites
+
+- Node.js **24+**, **pnpm 12.18.0**, Python 3, Make and Git.
+- AWS CLI v2, credentials authorized to deploy CDK/ECS/RDS/IAM/Secrets Manager resources, and a selected AWS profile.
+- Docker with a running daemon and `linux/amd64` support.
+- [AWS Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html).
+- Amazon Nova Micro inference availability in **us-east-1**, plus Aurora PostgreSQL 16.8 Serverless v2 availability.
+- For live tests: CloudFormation output read, ECS task discovery, SSM session, and `secretsmanager:GetSecretValue` permissions for this stack's master-key secret.
+
+Check your AWS identity before deployment or destruction:
+
+```bash
+export AWS_PROFILE=your-demo-profile
+aws sts get-caller-identity
+```
+
+The Makefile sets `AWS_REGION` and `AWS_DEFAULT_REGION` to `us-east-1` and deploys the `SpeedRunAiGateway` stack.
+
+## 1. Install and check locally
+
+```bash
 make install
 make check
 make synth
 ```
 
-The tests assert the synthesized network, IAM, ECS and RDS settings and check connection URL escaping and TLS configuration. Synthesis requires no AWS login or Docker daemon. To build the image locally, run `docker build --platform linux/amd64 -t speed-run-gateway ./gateway`.
+`make check` runs TypeScript type checking, TypeScript tests, and Python unit tests. `make synth` renders a strict CloudFormation template. Synthesis and tests don't require a deployed gateway. To build the container separately:
 
-## Deploy and verify
-
-Use AWS CLI v2 with credentials for the intended demo account and permission to deploy CDK stacks. A running Docker daemon is required to publish the image to the CDK bootstrap ECR repository. Install the AWS Session Manager plugin for port forwarding. Confirm that Nova Micro on-demand inference and Aurora PostgreSQL 16.8 Serverless v2 are available to your account in `us-east-1`. [Nova Micro availability](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-amazon-nova-micro.html) · [Aurora PostgreSQL versions](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraPostgreSQLReleaseNotes/aurorapostgresql-release-calendar.html)
-
-```sh
-export AWS_PROFILE=your-demo-profile
-make bootstrap                 # Once per account and region
-make diff
-make deploy
-make tunnel                    # Leave running in this terminal
+```bash
+docker build --platform linux/amd64 -t speed-run-gateway ./gateway
 ```
 
-In another terminal with the same AWS profile, run `make smoke`. It checks readiness and unauthenticated rejection, creates a temporary model-scoped virtual key with a USD 0.01 budget, reads the stored policy back, calls Nova Micro, and deletes the key. The operator needs CloudFormation output reads, ECS task discovery, and SSM session permissions. The smoke operator also needs `secretsmanager:GetSecretValue` for the stack's master-key secret. The test keeps both keys in memory and prints only its result.
+The gateway image pins LiteLLM to `v1.108.4` with a SHA-256 digest and includes the Amazon RDS CA bundle. Its startup script builds a TLS-configured PostgreSQL URL and runs LiteLLM bound to loopback.
 
-The LiteLLM Admin UI is at `http://127.0.0.1:4000/ui` while the tunnel is open. The master key is `sk-` followed by the `key` field of the secret identified by `MasterKeySecretArn`. To check persistence across task replacement, create a disposable virtual key with a small budget in the UI, force a new ECS deployment, reopen the tunnel to the replacement task, and confirm the same key can still invoke the model with its original budget. Delete the key afterwards.
+## 2. Deploy the stack
 
-## Verify budget enforcement
+```bash
+make bootstrap  # Once for the account and us-east-1, if not already bootstrapped
+make diff
+make deploy
+```
 
-With the deployed gateway and `make tunnel` running, use the same `AWS_PROFILE` as for `make smoke` and run `make test-budgets`. The command uses Python 3 and resolves the master key through the stack output and Secrets Manager, with the same read permissions as the smoke test. If you already have the master key, provide it through the `LITELLM_MASTER_KEY` environment variable. Use the repository's `nova-micro` route in `us-east-1` with LiteLLM spend tracking enabled.
+`make deploy` checks Docker and prints the AWS account ID before CDK deployment. Review the changes and any broadening-permission approval prompt. Outputs include `ClusterName`, `ServiceName`, `MasterKeySecretArn`, and `LogGroupName`.
 
-The test creates temporary model-scoped keys for App A (USD 0.01) and App B (USD 0.10). It sends real Bedrock requests through App A until it reaches the threshold, waits up to 90 seconds between the first and last spend reads, then requires a budget-specific denial. It checks that App B still has zero spend before its first request, then requires a successful completion and a recorded charge. Each run deletes the keys it created and leaves existing keys and budgets untouched. If a key remains after an interruption or cleanup failure, use the printed alias to locate it in the Admin UI. Temporary keys expire after 30 minutes.
+## 3. Start the SSM tunnel
 
-The live test incurs Bedrock token charges. It makes at most 30 load requests with 48,000 bytes of synthetic input each, followed by at most six short App A probes and one short App B request. All requests cap output at eight tokens. It stops sending large prompts once usage estimates reach USD 0.01. Under the configured Nova Micro on-demand rates, the full client request allowance is roughly USD 0.05 assuming one input token per byte, before gateway-side retries or any price changes. [Amazon Bedrock pricing](https://aws.amazon.com/bedrock/pricing/)
+In **terminal A**:
 
-## Verify LiteLLM retries and fallback locally
+```bash
+export AWS_PROFILE=your-demo-profile
+make tunnel
+```
 
-Run `make test-reliability` with Python 3 and a running Docker engine that supports
-`linux/amd64`. Docker downloads the digest-pinned LiteLLM image from
-`gateway/Dockerfile` if it is missing locally. The test starts the proxy and a
-programmable OpenAI-compatible mock on loopback inside a disposable container
-with external networking disabled. It requires no tunnel, AWS credentials, or
-gateway keys and makes no Bedrock calls.
+Leave the command running. In a **second terminal**, verify reachability:
 
-| Case | Primary responses | Backup responses | Client response |
+```bash
+curl --noproxy '*' -i http://127.0.0.1:4000/health/readiness
+```
+
+A successful readiness check returns HTTP 200. The gateway API is at `http://127.0.0.1:4000/v1`; the Admin UI is at `http://127.0.0.1:4000/ui`.
+
+**Common pitfall:** `make deploy` does **not** open the tunnel, and `make verify` does **not** start it automatically. Running `make smoke` without the tunnel produces `/health/readiness could not reach the gateway; check make tunnel`. If ECS replaces the task, reopen the tunnel to its new runtime ID.
+
+The LiteLLM master key is `sk-` followed by the `key` field from the Secrets Manager secret referenced by `MasterKeySecretArn`. Keep the master key in operator-only use; applications should use virtual keys.
+
+## 4. Smoke-test real Bedrock inference
+
+In terminal B, with the tunnel still running:
+
+```bash
+export AWS_PROFILE=your-demo-profile
+make smoke
+```
+
+This script:
+
+1. Checks readiness and rejects an unauthenticated model-list request.
+2. Creates a disposable virtual key limited to `nova-micro` with a **$0.01** budget.
+3. Reads the stored key policy back.
+4. Sends a real completion request to Nova Micro through Bedrock.
+5. Deletes the temporary key.
+
+On success it prints:
+
+```text
+Readiness, authentication, budgeted key, Bedrock completion and key deletion passed.
+```
+
+A successful readiness check alone does not prove inference works. The completion step does.
+
+## 5. Prove that application budgets are independent
+
+```bash
+make test-budgets
+```
+
+The live test creates disposable keys for **App A ($0.01)** and **App B ($0.10)**, both limited to `nova-micro`. It uses synthetic requests to bring App A's estimated spend to the threshold, waits for LiteLLM's stored spend to catch up, and checks for a **budget-specific denial**. It then checks that App B had zero spend before use, makes a successful App B request, and confirms that its charge is recorded.
+
+This matters because receiving a successful completion with a budgeted key is not evidence that budgets are enforced. The test checks both **denial after exhaustion** and **continued availability of a separately budgeted application**.
+
+The script caps output at eight tokens per request; it makes at most 30 large App A requests (48,000 bytes of synthetic input each), six small denial probes and one App B request. The estimated worst-case client-side workload is roughly **$0.05** under the documented token-cost assumption, before gateway retries or price changes. This is **not** a hard billing cap. Keys expire after 30 minutes and the script attempts cleanup even on failure.
+
+A manual UI walkthrough is optional: open `/ui`, create two disposable model-scoped keys with different budgets, observe their independent spend, and delete them. Never put the master key into client application code.
+
+## 6. Exercise retries and fallback in isolation
+
+```bash
+make test-reliability
+```
+
+This test uses the pinned LiteLLM image, a local mock provider, and a Docker container with **external networking disabled**. No AWS credentials, SSM tunnel, database, or Bedrock calls are needed.
+
+| Scenario | Primary response sequence | Backup response sequence | Expected outcome |
 | --- | --- | --- | --- |
-| Baseline | 200 | — | 200 with primary completion |
-| Retry | 429, 429, 200 | — | 200 with primary completion |
-| Fallback | 503, 503, 503 | 200 | 200 with backup completion |
-| Exhaustion | 503, 503, 503 | 503, 503, 503 | 503 with an injected error |
+| Baseline | 200 | None | Primary completion |
+| Retry | 429, 429, 200 | None | Primary completion after retries |
+| Fallback | 503, 503, 503 | 200 | Backup completion |
+| Exhaustion | 503, 503, 503 | 503, 503, 503 | Injected 503 error |
 
-The LiteLLM router allows two retries per model group and one fallback hop.
-The OpenAI SDK has retries disabled so each recorded upstream request corresponds
-to a router attempt. The mock records the model and HTTP status of every request
-in order. The suite checks that sequence alongside the client's status and
-completion or error marker. Each upstream request has a five-second timeout,
-with a longer client timeout for retries and fallback.
+The isolated router configuration allows two retries per model group and one fallback hop. Assertions compare the exact upstream request sequence, client HTTP status, and response marker. Reports are written to `.local/reliability/<run-id>/` as `results.json`, `summary.md`, and `evidence.json`; the reports exclude secrets, request bodies, and raw proxy logs.
 
-Each run prints its report directory under `.local/reliability/`. It contains
-`results.json` with assertions and expected and observed attempts,
-`summary.md` with pass/fail results, and `evidence.json` with the recorded
-attempts and allowlisted client response fields. Reports omit keys, headers,
-request bodies, and raw proxy logs. A failed check or harness error exits nonzero.
-Docker removes the container on exit and the runner requests cleanup on
-interruption or timeout.
+**Boundary:** production deployment config exposes only `nova-micro`. This mock suite tests how the pinned LiteLLM build handles retries and a configured backup route; it is **not proof of deployed cross-provider failover**.
 
-## Cost and teardown
+## 7. Run complete verification
 
-At 730 hours per month in Northern Virginia, one Linux/x86 task (0.5 vCPU, 2 GiB) costs about **$21**, its public IPv4 address **$3.65**, and Aurora at its 0.5 ACU floor **$43.80**. The minimum compute and IPv4 subtotal is about **$69/month** before database storage and I/O, CloudWatch, Secrets Manager, ECR, and Bedrock token charges. At 2 ACUs throughout the month, Aurora compute alone would cost about **$175/month**. LiteLLM key budgets govern model usage through the gateway. AWS bills infrastructure independently. [Fargate](https://aws.amazon.com/fargate/pricing/) · [VPC](https://aws.amazon.com/vpc/pricing/) · [Aurora](https://aws.amazon.com/rds/aurora/pricing/) · [Bedrock](https://aws.amazon.com/bedrock/pricing/)
+With the gateway deployed and `make tunnel` running in terminal A:
 
-Close the tunnel and run `make destroy` in the intended profile. Destruction deletes the demo database and its keys, budgets and spend records without a final snapshot. Export any data you need first. Verify `SpeedRunAiGateway` reached `DELETE_COMPLETE`. The shared `CDKToolkit` stack and its ECR assets may remain. Remove unused assets according to the account's cleanup procedure, keeping assets needed by other stacks.
+```bash
+make verify
+```
 
-## Milestone verification
+The Makefile runs these targets sequentially:
 
-The original requirements and quality-explainer attachments were unavailable in this workspace. The architecture follows the November 11 handoff. See the pull request for the checks run and the status of live deployment.
+| Target | Checks | External dependency |
+| --- | --- | --- |
+| `make check` | Type checking and unit tests | Local tooling |
+| `make smoke` | Authentication, model-scoped key, real completion | Deployed gateway, SSM tunnel, Bedrock |
+| `make test-budgets` | Spend tracking, exhausted App A, independent App B | Deployed gateway, SSM tunnel, Bedrock |
+| `make test-reliability` | Deterministic retries, fallback, exhaustion | Local Docker only |
+
+Only after every target passes does Make print `All verification steps passed.`. On **November 12, 2026**, the full clean redeploy and verification cycle passed:
+
+```text
+make destroy   PASS
+make deploy    PASS
+make verify    PASS
+```
+
+This result confirms the tested path; it does not establish production readiness, high availability or exhaustive security isolation.
+
+## Troubleshooting
+
+- **`/health/readiness could not reach the gateway`**: run `make tunnel` in another terminal, verify port 4000 isn't occupied, and rerun the readiness `curl`.
+- **SSM session cannot start**: check the Session Manager plugin, profile, session permissions, running ECS task, and ECS Exec configuration. A replaced task needs a new tunnel.
+- **Task not healthy**: inspect ECS service events and the CloudWatch log group from the stack output. Investigate database connection, startup migrations, TLS, and injected secrets.
+- **Bedrock returns an error**: check regional model availability, applicable model-access requirements, quotas, and the task role's explicit Nova Micro permissions.
+- **Spend stays zero / budget test fails**: inspect model pricing and persisted spend records; accounting can lag behind requests. A gateway budget isn't an AWS Billing limit.
+- **Reliability test fails**: verify Docker is running, `linux/amd64` can execute, and the pinned container image can be pulled. Inspect the generated `.local/reliability/` report.
+
+## Estimated cost
+
+At the configured minimum capacity for 730 hours in `us-east-1`, approximate monthly baseline charges are:
+
+| Resource | Approximate monthly cost |
+| --- | ---: |
+| Fargate, 0.5 vCPU / 2 GiB, x86 | $21 |
+| One public IPv4 address | $3.65 |
+| Aurora Serverless v2 at 0.5 ACU | $43.80 |
+| **Minimum compute + IPv4 subtotal** | **~$69** |
+
+This excludes Aurora storage and I/O, CloudWatch, Secrets Manager, ECR, and Bedrock inference. At 2 ACUs continuously, Aurora compute alone would be about $175/month. Costs vary by actual usage and current rates. See [Fargate pricing](https://aws.amazon.com/fargate/pricing/), [VPC pricing](https://aws.amazon.com/vpc/pricing/), [Aurora pricing](https://aws.amazon.com/rds/aurora/pricing/), and [Bedrock pricing](https://aws.amazon.com/bedrock/pricing/).
+
+Virtual-key budgets limit usage at the LiteLLM layer; they **do not limit Fargate, Aurora, networking or other AWS charges**.
+
+## Cleanup
+
+Stop the SSM tunnel, check the profile, and delete the demo stack:
+
+```bash
+aws sts get-caller-identity
+make destroy
+```
+
+Destruction deletes the Aurora database, virtual keys, budgets, and spend history **without a final snapshot**. Confirm that the `SpeedRunAiGateway` stack reaches `DELETE_COMPLETE` in CloudFormation. The shared `CDKToolkit` bootstrap stack and its ECR assets may remain; only remove assets after checking that other deployed stacks don't need them.
+
+## Security and production gaps
+
+This implementation intentionally does **not** provide public application ingress, customer identity or authorization, AWS tenant isolation, multi-task HA, autoscaling, database credential separation for migrations, a disaster recovery plan, or complete monitoring and alerting. Virtual keys are useful application controls, not a substitute for AWS account isolation. Treat the SSM access path and the master secret as privileged administrator capabilities.
+
+## Project map
+
+| Path | Purpose |
+| --- | --- |
+| `lib/gateway-stack.ts` | CDK VPC, ECS, Aurora, secrets, IAM, logging |
+| `gateway/` | LiteLLM image, model configuration and startup |
+| `scripts/tunnel.sh` | SSM port forwarding |
+| `scripts/smoke.py` | Live deployed-gateway smoke test |
+| `scripts/test_budgets.py` | Live independent-budget enforcement test |
+| `scripts/test_reliability.py` | Offline mock-based reliability test |
+| `test/` | TypeScript and Python unit tests |
+| `Makefile` | Repeatable install, deploy, verify and teardown commands |
