@@ -2,7 +2,7 @@ STACK := SpeedRunAiGateway
 export AWS_REGION := us-east-1
 export AWS_DEFAULT_REGION := us-east-1
 
-.PHONY: install check synth diff bootstrap deploy tunnel smoke test-budgets test-reliability destroy
+.PHONY: install check synth diff bootstrap deploy tunnel smoke test-budgets test-reliability destroy verify
 
 install:
 	pnpm install --frozen-lockfile
@@ -41,3 +41,6 @@ test-reliability:
 
 destroy:
 	pnpm cdk destroy $(STACK)
+
+verify: check smoke test-budgets test-reliability
+	@echo "All verification steps passed."
