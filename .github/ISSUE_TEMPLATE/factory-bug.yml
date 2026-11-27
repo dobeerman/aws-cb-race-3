@@ -1,0 +1,40 @@
+name: Bug Report
+description: Report a reproducible problem and its expected behavior
+title: "[Bug]: "
+labels: []
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Context
+      description: What actually happens? Include reproduction steps if possible.
+    validations:
+      required: true
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected Behavior
+      description: What should happen instead?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance Criteria
+      description: How will we verify the fix and detect regression?
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Technical Constraints
+      description: Optional technical limitations and compatibility requirements.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Optional logs, environment, screenshots, and links.
+    validations:
+      required: false

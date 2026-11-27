@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "projectId": "858dc0bb-1411-40fb-8434-2c1ffc9e8666",
+  "git": {
+    "host": "github.com",
+    "repository": "dobeerman/aws-cb-race-3"
+  },
+  "agent": {
+    "provider": "codex"
+  },
+  "checks": ["pnpm test"],
+    "allowedDirectories": ["./"],
+  "issue": {
+    "fields": {
+      "problem": [
+        "Problem / Context"
+      ],
+      "expectedBehavior": [
+        "Expected Behavior"
+      ],
+      "acceptanceCriteria": [
+        "Acceptance Criteria"
+      ],
+      "constraints": [
+        "Technical Constraints"
+      ],
+      "context": [
+        "Additional Context"
+      ]
+    }
+  }
+}
