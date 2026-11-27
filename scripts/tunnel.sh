@@ -6,7 +6,7 @@ command -v session-manager-plugin >/dev/null || {
   exit 1
 }
 export AWS_PAGER=
-stack=SpeedRunAiGateway
+stack=AWSCBRace3
 
 output() {
   aws cloudformation describe-stacks --stack-name "$stack" \
