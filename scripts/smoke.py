@@ -54,7 +54,7 @@ def request(path, key=None, body=None, *, query=None):
 
 def master_key():
     secret_arn = aws(
-        "cloudformation", "describe-stacks", "--stack-name", "SpeedRunAiGateway",
+        "cloudformation", "describe-stacks", "--stack-name", "AWSCBRace3",
         "--query", "Stacks[0].Outputs[?OutputKey=='MasterKeySecretArn'].OutputValue | [0]",
     )
     return "sk-" + json.loads(aws(

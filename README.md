@@ -58,7 +58,7 @@ export AWS_PROFILE=your-demo-profile
 aws sts get-caller-identity
 ```
 
-The Makefile sets `AWS_REGION` and `AWS_DEFAULT_REGION` to `us-east-1` and deploys the `SpeedRunAiGateway` stack.
+The Makefile sets `AWS_REGION` and `AWS_DEFAULT_REGION` to `us-east-1` and deploys the `AWSCBRace3` stack.
 
 ## 1. Install and check locally
 
@@ -225,7 +225,7 @@ aws sts get-caller-identity
 make destroy
 ```
 
-Destruction deletes the Aurora database, virtual keys, budgets, and spend history **without a final snapshot**. Confirm that the `SpeedRunAiGateway` stack reaches `DELETE_COMPLETE` in CloudFormation. The shared `CDKToolkit` bootstrap stack and its ECR assets may remain; only remove assets after checking that other deployed stacks don't need them.
+Destruction deletes the Aurora database, virtual keys, budgets, and spend history **without a final snapshot**. Confirm that the `AWSCBRace3` stack reaches `DELETE_COMPLETE` in CloudFormation. The shared `CDKToolkit` bootstrap stack and its ECR assets may remain; only remove assets after checking that other deployed stacks don't need them.
 
 ## Security and production gaps
 
